@@ -1,6 +1,7 @@
 """Termination condition evaluation with robust error handling."""
 
 import logging
+import threading
 from typing import Callable, Any, Optional
 import time
 
@@ -57,37 +58,39 @@ class TerminationConditionHandler:
                 condition_type=condition_name
             )
 
-        start_time = time.time()
-        try:
-            # Use a timeout mechanism
-            while time.time() - start_time < timeout:
-                try:
-                    result = condition()
-                    
-                    # Log condition evaluation
-                    self.logger.debug(
-                        f"Termination condition '{condition_name or 'unnamed'}' evaluated: {result}"
-                    )
-                    
-                    return result
+        # Thread-safe condition result and error storage
+        result = [None]
+        error = [None]
 
-                except Exception as inner_error:
-                    # Handle unexpected errors in the condition
-                    self.logger.warning(
-                        f"Error in termination condition '{condition_name or 'unnamed'}': {inner_error}"
-                    )
-                    raise TerminationConditionError(
-                        f"Unexpected error: {inner_error}", 
-                        condition_type=condition_name
-                    )
+        def run_condition():
+            try:
+                result[0] = condition()
+            except Exception as e:
+                error[0] = e
 
-            # Timeout occurred
+        # Run condition in a separate thread with timeout
+        thread = threading.Thread(target=run_condition)
+        thread.start()
+        thread.join(timeout=timeout)
+
+        # Check for timeout or thread completion
+        if thread.is_alive():
+            self.logger.warning(f"Termination condition '{condition_name or 'unnamed'}' timed out")
             raise TerminationConditionTimeoutError(
                 f"Condition evaluation timed out after {timeout} seconds", 
                 condition_type=condition_name
             )
 
-        except Exception as e:
-            # Log and re-raise with context
-            self.logger.error(f"Termination condition evaluation failed: {e}")
-            raise
+        # Check for any errors in the condition
+        if error[0] is not None:
+            self.logger.error(f"Error in termination condition: {error[0]}")
+            raise TerminationConditionError(
+                f"Unexpected error: {error[0]}", 
+                condition_type=condition_name
+            )
+
+        # Log and return result
+        self.logger.debug(
+            f"Termination condition '{condition_name or 'unnamed'}' evaluated: {result[0]}"
+        )
+        return result[0]
